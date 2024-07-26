@@ -1,4 +1,4 @@
-# reference code : https://github.com/dongzelian/SSF/blob/main/models/vision_transformer.py
+# referred from https://github.com/dongzelian/SSF/blob/main/models/vision_transformer.py
 # CVT3D_Model_SSF.py
 # Tested under 
 # main.py --tuning --tune_mode "ssf" with trainer.py 

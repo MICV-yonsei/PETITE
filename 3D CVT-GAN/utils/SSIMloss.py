@@ -1,9 +1,8 @@
 import torch
 import torch.nn.functional as F
+
 from torch import nn
-
 from monai.utils.type_conversion import convert_to_dst_type
-
 
 
 class SSIMLoss(nn.Module):

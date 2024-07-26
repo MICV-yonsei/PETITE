@@ -100,12 +100,6 @@ class MSEMetric(RegressionMetric):
         super().__init__(reduction=reduction, get_not_nans=get_not_nans)
         self.sq_func = partial(torch.pow, exponent=2.0)
 
-    # def _compute_metric(self, y_pred: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    #     y_pred = y_pred.float()
-    #     y = y.float()
-
-    #     return compute_mean_error_metrics(y_pred, y, func=self.sq_func)
-    
     def _compute_metric(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         logits = logits.float()
         target = target.float()

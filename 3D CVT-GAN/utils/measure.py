@@ -1,20 +1,18 @@
 import torch
 import numpy as np
-from math import exp
 import torch.nn.functional as F
+
 from torch.autograd import Variable
+from math import exp
 
 def compute_measure(x, y, pred, data_range):
     original_psnr = compute_PSNR(x, y, data_range)
-    
     original_ssim = compute_SSIM(x, y, data_range)
-    
     original_rmse = compute_RMSE(x, y)
     pred_psnr = compute_PSNR(pred, y, data_range)
     pred_ssim = compute_SSIM(pred, y, data_range)
     pred_rmse = compute_RMSE(pred, y)
     return (original_psnr, original_ssim, original_rmse), (pred_psnr, pred_ssim, pred_rmse)
-
 
 def compute_MSE(img1, img2):
     return ((img1 - img2) ** 2).mean()
