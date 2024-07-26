@@ -1,31 +1,70 @@
-# Parameter Efficient Fine Tuning for Multi-scanner PET to PET Reconstruction
+<div align="center">
+    <h1>Parameter Efficient Fine Tuning for <br> Multi-scanner PET to PET Reconstruction <br> MICCAI 2024</h1>
+</div>
 
+<div align="center">
+    <h3>Yumin Kim*, Gayoon Choi*, Seong Jae Hwang <br> Yonsei University <br> (* Equal Contributor) 
+</h3>
+                                            
+</div>
+
+
+<div align="center">
+  <h3>
+    <a href="https://arxiv.org/pdf/2407.07517">Paper</a> |
+    <a href="http://MICV-yonsei.github.io/petite2024/">Project Page</a>
+  </h3>
+</div>
+
+ ![STR](https://github.com/mineeuk/PETITE/assets/72694034/2641a7f3-facc-4eac-84cf-b96ea3c32f64)
+ 
 **Accepted @ MICCAI 2024** \
 We will release the code soon ! 🦍
 
-[[Project Page]](http://MICV-yonsei.github.io/petite2024/) [[arXiv]](http://MICV-yonsei.github.io/petite2024/)
+### Requirements
 
-![STR](https://github.com/mineeuk/PETITE/assets/72694034/2641a7f3-facc-4eac-84cf-b96ea3c32f64)
+```
+conda env create -f environment.yml
+conda activate cvt
+```
 
+### Dataset Preparation
 
-> **Parameter Efficient Fine Tuning for Multi-scanner PET to PET Reconstruction** \
-> International Conference on Medical Image Computing and Computer Assisted Intervention (MICCAI) 2024 \
-> Yumin Kim*, Gayoon Choi*, Seong Jae Hwang \
-Yonsei University
+For datasets from [ADNI(Alzheimer's Disease Neuroimaging Initiative)](https://ida.loni.usc.edu/login.jsp?project=ADNI) that include PET(Positron emission tomography) scans.
+```
+Data Collection/full_FDG/
+```
+Your dataset directory should be structured as follows:
+- training set: /root_dir/ADNI/Dynamic/Resolution/
+- validation set: /root_dir/ADNI/Averaged/Resolution/
 
-### Abstract
-Reducing scan time in Positron Emission Tomography (PET) imaging while maintaining high-quality images is crucial for minimizing patient discomfort and radiation exposure. Due to the limited size of datasets and distribution discrepancy across scanners in medical imaging, fine-tuning in a parameter-efficient and effective manner is on the rise. Motivated by the potential of Parameter-Efficient Fine-Tuning (PEFT), we aim to address these issues by effectively leveraging PEFT to improve limited data and GPU resource issues in multi-scanner setups. In this paper, we introduce **PETITE**, Parameter-Efficient Fine-Tuning for MultI-scanner PET to PET REconstruction that uses fewer than 1% of the parameters. To the best of our knowledge, this study is the first to systematically explore the efficacy of diverse PEFT techniques in medical imaging reconstruction tasks via prevalent encoder-decoder-type deep models. This investigation, in particular, brings intriguing insights into PETITE as we show further improvements by treating encoder and decoder separately and mixing different PEFT methods, namely, **Mix-PEFT**. Using multi-scanner PET datasets comprised of five different scanners, we extensively test the cross-scanner PET scan time reduction performances (i.e., a model pre-trained on one scanner is fine-tuned on a different scanner) of 21 feasible Mix-PEFT combinations to derive optimal PETITE. We show that training with less than 1% parameters using PETITE performs on par with full fine-tuning (i.e., 100% parameter).
+| Scanner | Resolution       | Voxel spacing             | Manufacturer        | Institution        |
+|---------|------------------|---------------------------|---------------------|--------------------|
+| 1       | (192, 192, 136)  | (1.21875, 1.21875, 1.21875)| Siemens             | Univ of California |
+| 2       | (192, 192, 128)  | (1.21875, 1.21875, 1.21875)| Siemens             | Univ of California |
+| 3       | (224, 224, 81)   | (1.01821, 1.01821, 2.02699)| Siemens             | Univ of California |
+| 4       | (128, 128, 90)   | (2, 2, 2)                  | Philips Healthcare  | OHSU               |
+| 5       | (128, 128, 63)   | (2.05941, 2.05941, 2.425)  | Siemens             | UCSD               |
 
-## How to Apply LoRA in Conv3D
+To create an json file for efficient data split, run the following command:
+```commandline
+sh shell/data/make_json.sh
+```
+
+### Training
+```commandline
+sh shell/train/tuning.sh
+```
+
+### Downloading pre-trained weights
+Click the links below to download the pre-trained weights for each of the five scanners. Each scanner has weights for three folds. 
+Training details are described in our paper. Currently, available versions of pre-trained weights are as follows:
+- [Scanner 1](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+- [Scanner 2](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+- [Scanner 3](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+- [Scanner 4](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+- [Scanner 5](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+
+### How to Apply LoRA in Conv3D
 Using Low-Rank Adaptation (LoRA) with Conv3D involves modifying the Conv3D layers to integrate the LoRA technique.
 
-### Citation
-If you found this code useful, please cite the following paper:
-```bibtex
-@InProceedings{2024petite,
-  author    = {Kim, Yumin and Choi, Gayoon and Hwang, Seong Jae},
-  title     = {Parameter Efficient Fine Tuning for Multi-scanner PET to PET Reconstruction},
-  booktitle = {Medical Image Computing and Computer Assisted Intervention (MICCAI)},
-  month     = {June},
-  year      = {2024}
-}
