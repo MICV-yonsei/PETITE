@@ -18,11 +18,14 @@ def compute_measure(x, y, pred, data_range):
 
 def compute_MSE(img1, img2):
     return ((img1 - img2) ** 2).mean()
+
+
 def compute_RMSE(img1, img2):
     if type(img1) == torch.Tensor:
         return torch.sqrt(compute_MSE(img1, img2)).item()
     else:
         return np.sqrt(compute_MSE(img1, img2))
+
 def compute_PSNR(img1, img2, data_range):
     if type(img1) == torch.Tensor:
         mse_ = compute_MSE(img1, img2)
@@ -30,6 +33,7 @@ def compute_PSNR(img1, img2, data_range):
     else:
         mse_ = compute_MSE(img1, img2)
         return 10 * np.log10((data_range ** 2) / mse_)
+
 
 def compute_SSIM(img1, img2, data_range, window_size=11, channel=1, size_average=True):
     # referred from https://github.com/Po-Hsun-Su/pytorch-ssim

@@ -1,6 +1,14 @@
+# CVT3D_Model_adapter.py
+# Tested under 
+# main_cvt.py --tuning --tune_mode "adpt" with trainer_all.py 
+# 
+# 1. Add the adapter module in class Block
+# 2. Use of the adapter can be control with Boolean in Generator
+# 3. New hyperparameter 'Reduction Factor' of the adapter is added
+#    -- can be control with float in Generator
+
 from functools import partial
 from itertools import repeat
-#from torch._six import container_abcs
 
 import logging
 import os
@@ -44,7 +52,6 @@ class LayerNorm(nn.LayerNorm):
         orig_type = x.dtype
         ret = super().forward(x.type(torch.float32))
         return ret.type(orig_type)
-
 
 class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
@@ -281,9 +288,10 @@ class Attention(nn.Module):
 
         module.__flops__ += flops
 
-
 class Block(nn.Module):
-
+    """
+    Insert Adapter
+    """
     def __init__(self,
                  dim_in,
                  dim_out,
@@ -293,8 +301,10 @@ class Block(nn.Module):
                  drop=0.,
                  attn_drop=0.,
                  drop_path=0.,
-                 act_layer=nn.GELU,
+                 act_layer=nn.ReLU,
                  norm_layer=nn.LayerNorm,
+                 reduction_factor=1,
+                 adpt_mode=False,
                  **kwargs):
         super().__init__()
 
@@ -303,7 +313,6 @@ class Block(nn.Module):
             dim_in, dim_out, num_heads, qkv_bias, attn_drop, drop,
             **kwargs
         )
-
         self.drop_path = DropPath(drop_path) \
             if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim_out) 
@@ -314,18 +323,46 @@ class Block(nn.Module):
             act_layer=act_layer,
             drop=drop
         )
+        
+        self.adpt_mode = adpt_mode
+        if adpt_mode:
+            self.adapter_downsample = nn.Linear(dim_out, int(dim_out/reduction_factor))
+            self.adapter_upsample = nn.Linear(int(dim_out/reduction_factor), dim_out)
+            self.adapter_act_fn = act_layer()
+            
+            nn.init.zeros_(self.adapter_downsample.weight)
+            nn.init.zeros_(self.adapter_downsample.bias)
+            nn.init.zeros_(self.adapter_upsample.weight)
+            nn.init.zeros_(self.adapter_upsample.bias)   
+            
     def forward(self, x, h, w,d):
         res = x
-
         x = self.norm1(x)
         attn = self.attn(x, h, w,d)
         x = res + self.drop_path(attn)
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-
+        
+        res = x
+        x = self.norm2(x)
+        x = self.mlp(x)
+        x = self.drop_path(x)
+        
+        if self.adpt_mode:
+            adpt = self.adapter_downsample(x)
+            adpt = self.adapter_act_fn(adpt)
+            adpt = self.adapter_upsample(adpt)
+            x = adpt + x
+        
+        x = x + res
         return x
 
-
+    
+    
+    
 class ConvEmbed(nn.Module):
+    """ Image to Conv Embedding
+
+    """
+
     def __init__(self,
                  kernel_size=3,
                  in_chans=3,
@@ -354,9 +391,6 @@ class ConvEmbed(nn.Module):
 
         return x
     
-    
-
-#
 class TransposeConvEmbed(nn.Module):
     """ Image to Conv Embedding
 
@@ -389,7 +423,10 @@ class TransposeConvEmbed(nn.Module):
         x = rearrange(x, 'b (h w d) c -> b c h w d', h=H, w=W,d=D)
 
         return x
-#
+
+
+
+
 class VisionTransformer_up(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
@@ -409,6 +446,8 @@ class VisionTransformer_up(nn.Module):
                  act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
                  init='xavier',
+                 reduction_factor=1,
+                 adpt_mode=False,
                  **kwargs):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -443,6 +482,8 @@ class VisionTransformer_up(nn.Module):
                     drop_path=dpr[j],
                     act_layer=act_layer,
                     norm_layer=norm_layer,
+                    reduction_factor=reduction_factor,
+                    adpt_mode=adpt_mode,
                     **kwargs
                 )
             )
@@ -455,10 +496,10 @@ class VisionTransformer_up(nn.Module):
 
     def _init_weights_trunc_normal(self, m):
         if isinstance(m, nn.Linear):
-            logging.info('=> init weight of Linear from trunc norm')
+            # logging.info('=> init weight of Linear from trunc norm')
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
-                logging.info('=> init bias of Linear to zeros')
+                # logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -466,10 +507,10 @@ class VisionTransformer_up(nn.Module):
 
     def _init_weights_xavier(self, m):
         if isinstance(m, nn.Linear):
-            logging.info('=> init weight of Linear from xavier uniform')
+            # logging.info('=> init weight of Linear from xavier uniform')
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                logging.info('=> init bias of Linear to zeros')
+                # logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -509,6 +550,8 @@ class VisionTransformer(nn.Module):
                  act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
                  init='xavier',
+                 reduction_factor=1,
+                 adpt_mode=False,
                  **kwargs):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -543,6 +586,8 @@ class VisionTransformer(nn.Module):
                     drop_path=dpr[j],
                     act_layer=act_layer,
                     norm_layer=norm_layer,
+                    reduction_factor=reduction_factor,
+                    adpt_mode=adpt_mode,
                     **kwargs
                 )
             )
@@ -555,10 +600,10 @@ class VisionTransformer(nn.Module):
 
     def _init_weights_trunc_normal(self, m):
         if isinstance(m, nn.Linear):
-            logging.info('=> init weight of Linear from trunc norm')
+            # logging.info('=> init weight of Linear from trunc norm')
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
-                logging.info('=> init bias of Linear to zeros')
+                # logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -566,10 +611,10 @@ class VisionTransformer(nn.Module):
 
     def _init_weights_xavier(self, m):
         if isinstance(m, nn.Linear):
-            logging.info('=> init weight of Linear from xavier uniform')
+            # logging.info('=> init weight of Linear from xavier uniform')
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                logging.info('=> init bias of Linear to zeros')
+                # logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -602,8 +647,9 @@ class ResBlock3D(nn.Module):
         return self.conv(x)
 #
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self, reduction_factor=1):
         super().__init__()
+        print(f"Reduction Factor: {reduction_factor}")
         #downsampling part
         #layer0 1->64
         #64*64*64
@@ -614,14 +660,14 @@ class Generator(nn.Module):
             )
         self.encoder_layer1_down=nn.Sequential(
             VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=64,embed_dim=128,
-                                              depth=1,num_heads=2,mlp_ratio=4,))
+                                              depth=1,num_heads=2,mlp_ratio=4,reduction_factor=reduction_factor, adpt_mode=True))
         self.encoder_layer2_down=nn.Sequential(
             VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=128,embed_dim=256,
-                                              depth=2,num_heads=4,mlp_ratio=4,drop_rate=0.2))
+                                              depth=2,num_heads=4,mlp_ratio=4,drop_rate=0.2,reduction_factor=reduction_factor, adpt_mode=True))
 
         self.encoder_layer3_down=nn.Sequential(
             VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=256,embed_dim=512,
-                                              depth=2,num_heads=4,mlp_ratio=4))
+                                              depth=2,num_heads=4,mlp_ratio=4,reduction_factor=reduction_factor, adpt_mode=True))
         # self.encoder_layer4_down=nn.Sequential(
         #     VisionTransformer(kernel_size=3,stride=1,padding=1,in_chans=512,embed_dim=512,
         #                                       depth=2,num_heads=4,mlp_ratio=4))
@@ -644,7 +690,8 @@ class Generator(nn.Module):
             nn.BatchNorm3d(512),
             )
         self.resup1=ResBlock3D(512, 512)
-        self.decoder_layer1_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=512,embed_dim=256,depth=2,num_heads=4)
+        self.decoder_layer1_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=512,embed_dim=256,depth=2,num_heads=4,
+                                                    reduction_factor=reduction_factor, adpt_mode=True)
         #8*8*8
         self.decoder_layer2=nn.Sequential(
             nn.Conv3d(256*2,256,kernel_size=3,stride=1,padding=1),
@@ -653,7 +700,8 @@ class Generator(nn.Module):
             nn.BatchNorm3d(256),
             )
         self.resup2=ResBlock3D(256*2, 256)
-        self.decoder_layer2_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=256,embed_dim=128,depth=1,num_heads=4)
+        self.decoder_layer2_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=256,embed_dim=128,depth=1,num_heads=4,
+                                                    reduction_factor=reduction_factor, adpt_mode=True)
         #16*16*16
         #
         self.decoder_layer3=nn.Sequential(
@@ -712,7 +760,7 @@ class Generator(nn.Module):
         return de3+x 
 #
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self,reduction_factor=1):
         super().__init__()
         self.conv0=nn.Sequential(
             nn.Conv3d(2,8,kernel_size=3,stride=2,padding=1),
@@ -731,9 +779,11 @@ class Discriminator(nn.Module):
             nn.Dropout3d(0.2),
             )
         self.conv3=VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=32,embed_dim=64,
-                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3)
+                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3,
+                                            )
         self.conv4=VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=64,embed_dim=64,
-                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3)
+                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3,
+                                            )
 
         #self.conv5=nn.Conv3d(128,1,kernel_size=1,stride=1,padding=0)
         self.mlp=nn.Sequential(

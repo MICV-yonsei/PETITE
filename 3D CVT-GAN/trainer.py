@@ -2,12 +2,19 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from monai.utils import MetricReduction
+from monai.metrics import RMSEMetric
+from torch.cuda.amp import GradScaler, autocast
+from utils.utils import AverageMeter, distributed_all_gather
+from utils.valid_utils import make_new_df, fill_df # save result to csv format
+from utils.metric import SSIMMetric
 
 import numpy as np
 import pandas as pd
@@ -21,17 +28,12 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.utils.data.distributed
-from torch.cuda.amp import GradScaler, autocast
 import nibabel as nib
-from monai.utils import MetricReduction
-from monai.metrics import RMSEMetric
 
-from utils.utils import AverageMeter, distributed_all_gather
-from utils.valid_utils import make_new_df, fill_df
-from utils.metric import SSIMMetric
-import loralib as lora
+import loralib as lora #lora 
 
 def show_params(model):
+    """Computing tuned Parameter nums"""
     for name, param in model.named_parameters():
         if param.requires_grad:
             print(name)
@@ -63,18 +65,18 @@ def Tuner(modeld, modelg, args):
 
     elif args.tune_mode == "adpt":
         for n, p in modeld.named_parameters():
-            if 'adapter_' in n:
+            if 'adapter' in n:
                 p.requires_grad_(True)
         for n, p in modelg.named_paramets():
-            if 'adapter_' in n:
+            if 'adapter' in n:
                 p.requires_grad_(True)
                 
     elif args.tune_mode == "lora":
         for n, p in modeld.named_parameters():
-            if 'lora_' in n:
+            if 'lora' in n:
                 p.requires_grad_(True)
         for n, p in modelg.named_parameters():
-            if 'lora_' in n:
+            if 'lora' in n:
                 p.requires_grad_(True)
                         
     elif args.tune_mode in ["shallow", "deep"]:
@@ -121,8 +123,8 @@ def Tuner(modeld, modelg, args):
     return modeld, modelg
 
 def train_epoch(modeld, modelg, loader, optimizer, optimizer_G, epoch, loss_func, args):   
-    modeld.train()
-    modelg.train() 
+    modeld.train() # discriminator
+    modelg.train() # generator
 
     if args.tune_mode:
         modeld, modelg = Tuner(modeld=modeld, modelg=modelg, args=args)
@@ -148,8 +150,6 @@ def train_epoch(modeld, modelg, loader, optimizer, optimizer_G, epoch, loss_func
             param.grad = None
         for param in modelg.parameters():
             param.grad = None
-        
-        
         
         with autocast(enabled=args.amp):
             
@@ -192,6 +192,7 @@ def train_epoch(modeld, modelg, loader, optimizer, optimizer_G, epoch, loss_func
             
             # Wandb Logging
             loss = loss_func(G_output, y)
+            # Metric
             psnr = 10*torch.log10(1.0 / loss)
             data_range = y.max().unsqueeze(0) 
             ssim = SSIMMetric(data_range=data_range,spatial_dims=3)._compute_metric(G_output, y)
@@ -244,6 +245,7 @@ def train_epoch(modeld, modelg, loader, optimizer, optimizer_G, epoch, loss_func
 def val_epoch(modeld, modelg, loader, optimizer, optimizer_G, epoch, loss_func, args, model_inferer=None, modeld_inferer=None,): 
     modeld.eval()
     modelg.eval()
+    
     modeld.requires_grad_(False)
     modelg.requires_grad_(False)
     
@@ -417,8 +419,9 @@ def run_training_cvt(
     if not os.path.exists(args.csv_dir):
         df = make_new_df(max_epoch=args.max_epochs, val_every=args.val_every)
     else:
+        # 3-fold CV
         df = {
-            '1': pd.read_excel(args.csv_dir, sheet_name='1', header=0, index_col=0),
+            '1': pd.read_excel(args.csv_dir, sheet_name='1', header=0, index_col=0), 
             '2': pd.read_excel(args.csv_dir, sheet_name='2', header=0, index_col=0),
             '3': pd.read_excel(args.csv_dir, sheet_name='3', header=0, index_col=0),
             }      
@@ -489,7 +492,7 @@ def run_training_cvt(
         if scheduler_G is not None:
             scheduler_G.step()
 
-    print("Training Finished ><!")
+    print("Training Finished !")
 
     return val_acc_max
 

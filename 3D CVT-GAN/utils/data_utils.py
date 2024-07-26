@@ -72,7 +72,7 @@ def get_loader(args):
     train_transform = transforms.Compose(
         [
             transforms.LoadImaged(keys=["image", "label"]),
-            transforms.EnsureChannelFirstd(keys=["image", "label"]), 
+            transforms.EnsureChannelFirstd(keys=["image", "label"]), #(1,128,128,128)
             transforms.Spacingd(
                 keys=["image", "label"], pixdim=(args.space_x, args.space_y, args.space_z), mode=("bilinear", "nearest")
             ),
@@ -83,7 +83,7 @@ def get_loader(args):
             transforms.RandCropByPosNegLabeld( 
                 keys=["image", "label"],
                 label_key="label", 
-                spatial_size=(args.roi_x, args.roi_y, args.roi_z), 
+                spatial_size=(args.roi_x, args.roi_y, args.roi_z), #=roi
                 pos=1,
                 neg=1,
                 num_samples=4,
@@ -96,15 +96,19 @@ def get_loader(args):
             [   
                 transforms.LoadImaged(keys=["image", "label"]),
                 transforms.EnsureChannelFirstd(keys=["image", "label"]),
+                # transforms.CropForegroundd(keys=["image", "label"], source_key="image"),
+                # transforms.Orientationd(keys=["image", "label"], axcodes="RAS"),
                 transforms.Spacingd(
                 keys=["image", "label"], pixdim=(args.space_x, args.space_y, args.space_z),),
                 transforms.ScaleIntensityd(
                     keys=["image", "label"], minv=0, maxv=1
                 ),
+                # transforms.SaveImaged(keys=["image", "label"], output_dir="./outputs/", output_ext=".nii", resample=False),
     
             ]
         )
-
+    ###original###
+    
     if args.test_mode:
         test_files = load_decathlon_datalist(datalist_json, True, "validation", base_dir=data_dir)
         test_ds = data.Dataset(data=test_files, transform=val_transform)

@@ -1,51 +1,30 @@
-# 2023-09-24
-# CVT3D_Model_adapter.py
+# reference code : https://github.com/dongzelian/SSF/blob/main/models/vision_transformer.py
+# CVT3D_Model_SSF.py
 # Tested under 
-# main_cvt.py --tuning --tune_mode "adpt" with trainer_all.py 
-# 
-# 1. Add the adapter module in class Block
-# 2. Use of the adapter can be control with Boolean in Generator
-# 3. New hyperparameter 'Reduction Factor' of the adapter is added
-#    -- can be control with float in Generator
+# main.py --tuning --tune_mode "ssf" with trainer.py 
+
+# Add the ssf module in class Block
 
 from functools import partial
 from itertools import repeat
-#from torch._six import container_abcs
+from collections import OrderedDict
+from timm.models.layers.helpers import to_2tuple
+from timm.models.layers import DropPath, trunc_normal_, to_2tuple
+from timm.models.layers import DropPath, trunc_normal_
+from thop import profile
+from einops import rearrange
+from einops.layers.torch import Rearrange
 
 import logging
 import os
-from collections import OrderedDict
-
 import numpy as np
 import scipy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
-from einops.layers.torch import Rearrange
 import SimpleITK as sitk
-from timm.models.layers import DropPath, trunc_normal_
-from thop import profile
-#from .registry import register_model
 
-
-# From PyTorch internals
-'''
-def _ntuple(n):
-    def parse(x):
-        if isinstance(x, container_abcs.Iterable):
-            return x
-        return tuple(repeat(x, n))
-
-    return parse
-
-
-to_1tuple = _ntuple(1)
-to_2tuple = _ntuple(2)
-to_3tuple = _ntuple(3)
-to_4tuple = _ntuple(4)
-to_ntuple = _ntuple
-'''
+from .registry import register_model
 
 class LayerNorm(nn.LayerNorm):
     """Subclass torch's LayerNorm to handle fp16."""
@@ -55,6 +34,7 @@ class LayerNorm(nn.LayerNorm):
         ret = super().forward(x.type(torch.float32))
         return ret.type(orig_type)
 
+   
 class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
         return x * torch.sigmoid(1.702 * x)
@@ -65,20 +45,36 @@ class Mlp(nn.Module):
                  hidden_features=None,
                  out_features=None,
                  act_layer=nn.GELU,
+                 bias=False,
+                 tune_mode=False,
                  drop=0.):
+        
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
+        bias = to_2tuple(bias)
+        drop_probs = to_2tuple(drop)
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self.drop = nn.Dropout(drop_probs[1])
+        
+        self.tune_mode = tune_mode
+        if self.tune_mode :  
+            self.ssf_scale_1, self.ssf_shift_1 = init_ssf_scale_shift(hidden_features)
+            self.ssf_scale_2, self.ssf_shift_2 = init_ssf_scale_shift(out_features)
 
     def forward(self, x):
         x = self.fc1(x)
+        if self.tune_mode : 
+            x = ssf_ada(x, self.ssf_scale_1, self.ssf_shift_1)
+            
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)
+        if self.tune_mode :  
+            x = ssf_ada(x, self.ssf_scale_2, self.ssf_shift_2)
+            
         x = self.drop(x)
         return x
     
@@ -97,9 +93,11 @@ class Attention(nn.Module):
                  padding_kv=1,
                  padding_q=1,
                  with_cls_token=False,
+                 tune_mode=False,
                  **kwargs
                  ):
         super().__init__()
+          
         self.stride_kv = stride_kv
         self.stride_q = stride_q
         self.dim = dim_out
@@ -129,6 +127,11 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim_out, dim_out)
         self.proj_drop = nn.Dropout(proj_drop)
 
+        self.tune_mode = tune_mode
+        if tune_mode : 
+            self.ssf_scale_1, self.ssf_shift_1 = init_ssf_scale_shift(dim_out)
+            self.ssf_scale_2, self.ssf_shift_2 = init_ssf_scale_shift(dim_out)
+            
     def _build_projection(self,
                           dim_in,
                           dim_out,
@@ -168,9 +171,7 @@ class Attention(nn.Module):
         return proj
 
     def forward_conv(self, x, h, w, d):
-        #print('x:',x.shape)
         x = rearrange(x, 'b (h w d) c -> b c h w d', h=h, w=w,d=d)
-        #print('x:',x.shape)
         if self.conv_proj_q is not None:
             q = self.conv_proj_q(x)
         else:
@@ -188,22 +189,28 @@ class Attention(nn.Module):
 
         return q, k, v
 
-    def forward(self, x, h, w,d):
+    def forward(self, x, h, w, d):
         if (
             self.conv_proj_q is not None
             or self.conv_proj_k is not None
             or self.conv_proj_v is not None
         ):
-            q, k, v = self.forward_conv(x, h, w,d)
-        #print('q:',q.shape)
-        #print('k:',q.shape)
-        #print('v:',q.shape)
-        q = rearrange(self.proj_q(q), 'b t (h d) -> b h t d', h=self.num_heads)
-        k = rearrange(self.proj_k(k), 'b t (h d) -> b h t d', h=self.num_heads)
-        v = rearrange(self.proj_v(v), 'b t (h d) -> b h t d', h=self.num_heads)
-        #print('q:',q.shape)
-        #print('k:',q.shape)
-        #print('v:',q.shape)
+            q, k, v = self.forward_conv(x, h, w, d)
+
+        if self.tune_mode :
+            q = ssf_ada(self.proj_q(q), self.ssf_scale_1, self.ssf_shift_1)
+            k = ssf_ada(self.proj_k(k), self.ssf_scale_1, self.ssf_shift_1)
+            v = ssf_ada(self.proj_v(v), self.ssf_scale_1, self.ssf_shift_1)
+        else:
+            q = self.proj_q(q)
+            k = self.proj_k(k)
+            v = self.proj_v(v)
+
+        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
+        k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_heads)
+        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_heads)
+
+            
         attn_score = torch.einsum('bhlk,bhtk->bhlt', [q, k]) * self.scale
         attn = F.softmax(attn_score, dim=-1)
         attn = self.attn_drop(attn)
@@ -212,88 +219,32 @@ class Attention(nn.Module):
         x = rearrange(x, 'b h t d -> b t (h d)')
 
         x = self.proj(x)
+        if self.tune_mode :
+            x = ssf_ada(x, self.ssf_scale_2, self.ssf_shift_2)
         x = self.proj_drop(x)
 
         return x
 
-    @staticmethod
-    def compute_macs(module, input, output):
-        # T: num_token
-        # S: num_token
-        input = input[0]
-        flops = 0
+# ADD SSF Module
+def init_ssf_scale_shift(dim_out):
+        scale = nn.Parameter(torch.ones(dim_out))
+        shift = nn.Parameter(torch.zeros(dim_out))
+        nn.init.normal_(scale, mean=1, std=.02)
+        nn.init.normal_(shift, std=.02)
 
-        _, T, C = input.shape
-        H = W = int(np.sqrt(T-1)) if module.with_cls_token else int(np.sqrt(T))
+        return scale, shift
 
-        H_Q = H / module.stride_q
-        W_Q = H / module.stride_q
-        T_Q = H_Q * W_Q + 1 if module.with_cls_token else H_Q * W_Q
-
-        H_KV = H / module.stride_kv
-        W_KV = W / module.stride_kv
-        T_KV = H_KV * W_KV + 1 if module.with_cls_token else H_KV * W_KV
-
-        # C = module.dim
-        # S = T
-        # Scaled-dot-product macs
-        # [B x T x C] x [B x C x T] --> [B x T x S]
-        # multiplication-addition is counted as 1 because operations can be fused
-        flops += T_Q * T_KV * module.dim
-        # [B x T x S] x [B x S x C] --> [B x T x C]
-        flops += T_Q * module.dim * T_KV
-
-        if (
-            hasattr(module, 'conv_proj_q')
-            and hasattr(module.conv_proj_q, 'conv')
-        ):
-            params = sum(
-                [
-                    p.numel()
-                    for p in module.conv_proj_q.conv.parameters()
-                ]
-            )
-            flops += params * H_Q * W_Q
-
-        if (
-            hasattr(module, 'conv_proj_k')
-            and hasattr(module.conv_proj_k, 'conv')
-        ):
-            params = sum(
-                [
-                    p.numel()
-                    for p in module.conv_proj_k.conv.parameters()
-                ]
-            )
-            flops += params * H_KV * W_KV
-
-        if (
-            hasattr(module, 'conv_proj_v')
-            and hasattr(module.conv_proj_v, 'conv')
-        ):
-            params = sum(
-                [
-                    p.numel()
-                    for p in module.conv_proj_v.conv.parameters()
-                ]
-            )
-            flops += params * H_KV * W_KV
-
-        params = sum([p.numel() for p in module.proj_q.parameters()])
-        flops += params * T_Q
-        params = sum([p.numel() for p in module.proj_k.parameters()])
-        flops += params * T_KV
-        params = sum([p.numel() for p in module.proj_v.parameters()])
-        flops += params * T_KV
-        params = sum([p.numel() for p in module.proj.parameters()])
-        flops += params * T
-
-        module.__flops__ += flops
+def ssf_ada(x, scale, shift):
+        assert scale.shape == shift.shape
+        if x.shape[-1] == scale.shape[0]:  
+            return x * scale + shift
+        elif x.shape[1] == scale.shape[0]:
+            return x * scale.view(1, -1, 1, 1) + shift.view(1, -1, 1, 1)
+        else:
+            raise ValueError('the input tensor shape does not match the shape of the scale factor.')
+# ADD SSF Module
 
 class Block(nn.Module):
-    """
-    Insert Adapter
-    """
     def __init__(self,
                  dim_in,
                  dim_out,
@@ -303,77 +254,70 @@ class Block(nn.Module):
                  drop=0.,
                  attn_drop=0.,
                  drop_path=0.,
-                 act_layer=nn.ReLU,
+                 act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
-                 reduction_factor=1,
-                 adpt_mode=False,
+                 init_values=False,
+                 tune_mode=False,
                  **kwargs):
         super().__init__()
-
+        
         self.norm1 = norm_layer(dim_in)
         self.attn = Attention(
-            dim_in, dim_out, num_heads, qkv_bias, attn_drop, drop,
-            **kwargs
+            dim_in, dim_out, num_heads, qkv_bias, attn_drop, drop, tune_mode=tune_mode
         )
         self.drop_path = DropPath(drop_path) \
             if drop_path > 0. else nn.Identity()
+            
         self.norm2 = norm_layer(dim_out) 
+        
         dim_mlp_hidden = int(dim_out * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim_out,
             hidden_features=dim_mlp_hidden,
             act_layer=act_layer,
-            drop=drop
+            drop=drop,
+            tune_mode=tune_mode
         )
+        self.drop_path = DropPath(drop_path) \
+            if drop_path > 0. else nn.Identity()
         
-        self.adpt_mode = adpt_mode
-        if adpt_mode:
-            self.adapter_downsample = nn.Linear(dim_out, int(dim_out/reduction_factor))
-            self.adapter_upsample = nn.Linear(int(dim_out/reduction_factor), dim_out)
-            self.adapter_act_fn = act_layer()
+        self.tune_mode = tune_mode  
+        if tune_mode :
+            self.ssf_scale_1, self.ssf_shift_1 = init_ssf_scale_shift(dim_out)
+            self.ssf_scale_2, self.ssf_shift_2 = init_ssf_scale_shift(dim_out)
             
-            nn.init.zeros_(self.adapter_downsample.weight)
-            nn.init.zeros_(self.adapter_downsample.bias)
-            nn.init.zeros_(self.adapter_upsample.weight)
-            nn.init.zeros_(self.adapter_upsample.bias)   
-            
-    def forward(self, x, h, w,d):
+    def forward(self, x, h, w, d):
         res = x
         x = self.norm1(x)
+        if self.tune_mode : 
+            x = ssf_ada(x, self.ssf_scale_1, self.ssf_shift_1)
         attn = self.attn(x, h, w,d)
         x = res + self.drop_path(attn)
-        
+    
         res = x
         x = self.norm2(x)
+        if self.tune_mode : 
+            x = ssf_ada(x, self.ssf_scale_2, self.ssf_shift_2)
         x = self.mlp(x)
-        x = self.drop_path(x)
-        
-        if self.adpt_mode:
-            adpt = self.adapter_downsample(x)
-            adpt = self.adapter_act_fn(adpt)
-            adpt = self.adapter_upsample(adpt)
-            x = adpt + x
+        x = res + self.drop_path(attn)
         
         x = x + res
         return x
 
-    
-    
-    
 class ConvEmbed(nn.Module):
     """ Image to Conv Embedding
-
     """
-
     def __init__(self,
                  kernel_size=3,
                  in_chans=3,
                  embed_dim=64,
                  stride=4,
                  padding=2,
-                 norm_layer=None):
+                 norm_layer=None,
+                 tune_mode=False,
+                 ):
         super().__init__()
-
+        self.tune_mode = tune_mode
         self.proj = nn.Conv3d(
             in_chans, embed_dim,
             kernel_size=kernel_size,
@@ -381,54 +325,68 @@ class ConvEmbed(nn.Module):
             padding=padding
         )
         self.norm = norm_layer(embed_dim) if norm_layer else None
+        if self.tune_mode : 
+            self.ssf_scale_1, self.ssf_shift_1 = init_ssf_scale_shift(embed_dim)
+            if self.norm:
+                self.ssf_scale_2, self.ssf_shift_2 = init_ssf_scale_shift(embed_dim)
 
     def forward(self, x):
         x = self.proj(x)
 
         B, C, H, W,D = x.shape
         x = rearrange(x, 'b c h w d -> b (h w d) c')
+        if self.tune_mode :
+            x = ssf_ada(x, self.ssf_scale_1, self.ssf_shift_1)
         if self.norm:
             x = self.norm(x)
+            if self.tune_mode :
+                x = ssf_ada(x, self.ssf_scale_2, self.ssf_shift_2)
         x = rearrange(x, 'b (h w d) c -> b c h w d', h=H, w=W,d=D)
 
         return x
+
     
 class TransposeConvEmbed(nn.Module):
-    """ Image to Conv Embedding
-
-    """
-
     def __init__(self,
                  kernel_size=3,
                  in_chans=3,
                  embed_dim=64,
                  stride=4,
                  padding=2,
-                 norm_layer=None):
+                 norm_layer=None,
+                 tune_mode=False):
         super().__init__()
-
+                
         self.proj = nn.ConvTranspose3d(
             in_chans, embed_dim,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding
         )
+         
         self.norm = norm_layer(embed_dim) if norm_layer else None
+        self.tune_mode = tune_mode
+        if self.tune_mode : 
+            self.ssf_scale_1, self.ssf_shift_1 = init_ssf_scale_shift(embed_dim)
+            if self.norm:
+                self.ssf_scale_2, self.ssf_shift_2 = init_ssf_scale_shift(embed_dim)
+
 
     def forward(self, x):
         x = self.proj(x)
 
         B, C, H, W,D = x.shape
         x = rearrange(x, 'b c h w d -> b (h w d) c')
+        if self.tune_mode :
+            x = ssf_ada(x, self.ssf_scale_1, self.ssf_shift_1)
         if self.norm:
             x = self.norm(x)
+            if self.tune_mode :
+                x = ssf_ada(x, self.ssf_scale_2, self.ssf_shift_2)
         x = rearrange(x, 'b (h w d) c -> b c h w d', h=H, w=W,d=D)
 
         return x
-
-
-
-
+    
 class VisionTransformer_up(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
@@ -448,14 +406,13 @@ class VisionTransformer_up(nn.Module):
                  act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
                  init='xavier',
-                 reduction_factor=1,
-                 adpt_mode=False,
+                 tune_mode=False,
                  **kwargs):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
 
         self.rearrage = None
-
+     
         self.patch_embed = TransposeConvEmbed(
             # img_size=img_size,
             #patch_size=patch_size,
@@ -484,8 +441,7 @@ class VisionTransformer_up(nn.Module):
                     drop_path=dpr[j],
                     act_layer=act_layer,
                     norm_layer=norm_layer,
-                    reduction_factor=reduction_factor,
-                    adpt_mode=adpt_mode,
+                    tune_mode=tune_mode,
                     **kwargs
                 )
             )
@@ -498,10 +454,10 @@ class VisionTransformer_up(nn.Module):
 
     def _init_weights_trunc_normal(self, m):
         if isinstance(m, nn.Linear):
-            # logging.info('=> init weight of Linear from trunc norm')
+            logging.info('=> init weight of Linear from trunc norm')
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
-                # logging.info('=> init bias of Linear to zeros')
+                logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -509,10 +465,10 @@ class VisionTransformer_up(nn.Module):
 
     def _init_weights_xavier(self, m):
         if isinstance(m, nn.Linear):
-            # logging.info('=> init weight of Linear from xavier uniform')
+            logging.info('=> init weight of Linear from xavier uniform')
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                # logging.info('=> init bias of Linear to zeros')
+                logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -523,12 +479,11 @@ class VisionTransformer_up(nn.Module):
         B, C, H, W ,D= x.size()
 
         x = rearrange(x, 'b c h w d -> b (h w d) c')
-
         x = self.pos_drop(x)
 
         for i, blk in enumerate(self.blocks):
             x = blk(x, H, W,D)
- 
+        
         x = rearrange(x, 'b (h w d) c -> b c h w d', h=H, w=W,d=D)
 
         return x 
@@ -551,9 +506,8 @@ class VisionTransformer(nn.Module):
                  drop_path_rate=0.,
                  act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
+                 tune_mode=False,
                  init='xavier',
-                 reduction_factor=1,
-                 adpt_mode=False,
                  **kwargs):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -568,12 +522,13 @@ class VisionTransformer(nn.Module):
             stride=stride,
             padding=padding,
             embed_dim=embed_dim,
-            norm_layer=norm_layer
+            norm_layer=norm_layer,
+            tune_mode=tune_mode
         )
 
         self.pos_drop = nn.Dropout(p=drop_rate)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
-
+        
         blocks = []
         for j in range(depth):
             blocks.append(
@@ -588,8 +543,7 @@ class VisionTransformer(nn.Module):
                     drop_path=dpr[j],
                     act_layer=act_layer,
                     norm_layer=norm_layer,
-                    reduction_factor=reduction_factor,
-                    adpt_mode=adpt_mode,
+                    tune_mode=tune_mode,
                     **kwargs
                 )
             )
@@ -602,10 +556,10 @@ class VisionTransformer(nn.Module):
 
     def _init_weights_trunc_normal(self, m):
         if isinstance(m, nn.Linear):
-            # logging.info('=> init weight of Linear from trunc norm')
+            logging.info('=> init weight of Linear from trunc norm')
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
-                # logging.info('=> init bias of Linear to zeros')
+                logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -613,10 +567,10 @@ class VisionTransformer(nn.Module):
 
     def _init_weights_xavier(self, m):
         if isinstance(m, nn.Linear):
-            # logging.info('=> init weight of Linear from xavier uniform')
+            logging.info('=> init weight of Linear from xavier uniform')
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                # logging.info('=> init bias of Linear to zeros')
+                logging.info('=> init bias of Linear to zeros')
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
@@ -628,16 +582,14 @@ class VisionTransformer(nn.Module):
         B, C, H, W ,D= x.size()
 
         x = rearrange(x, 'b c h w d -> b (h w d) c')
-
         x = self.pos_drop(x)
 
         for i, blk in enumerate(self.blocks):
             x = blk(x, H, W,D)
  
         x = rearrange(x, 'b (h w d) c -> b c h w d', h=H, w=W,d=D)
-
         return x 
-#
+
 class ResBlock3D(nn.Module):
     def __init__(self,in_chan,out_chan):
         super().__init__()
@@ -647,14 +599,10 @@ class ResBlock3D(nn.Module):
         self.transconv=nn.ConvTranspose3d(in_chan,out_chan,kernel_size=1,stride=1,padding=0)
     def forward(self,x):
         return self.conv(x)
-#
+
 class Generator(nn.Module):
-    def __init__(self, reduction_factor=1):
+    def __init__(self):
         super().__init__()
-        print(f"Reduction Factor: {reduction_factor}")
-        #downsampling part
-        #layer0 1->64
-        #64*64*64
         self.encoder_layer0_down=nn.Sequential(
             nn.Conv3d(1, 64, kernel_size=3,stride=2,padding=1),
             nn.LeakyReLU(0.2),
@@ -662,39 +610,23 @@ class Generator(nn.Module):
             )
         self.encoder_layer1_down=nn.Sequential(
             VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=64,embed_dim=128,
-                                              depth=1,num_heads=2,mlp_ratio=4,reduction_factor=reduction_factor, adpt_mode=True))
+                                              depth=1,num_heads=2,mlp_ratio=4,tune_mode=True))
         self.encoder_layer2_down=nn.Sequential(
             VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=128,embed_dim=256,
-                                              depth=2,num_heads=4,mlp_ratio=4,drop_rate=0.2,reduction_factor=reduction_factor, adpt_mode=True))
+                                              depth=2,num_heads=4,mlp_ratio=4,drop_rate=0.2,tune_mode=True))
 
         self.encoder_layer3_down=nn.Sequential(
             VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=256,embed_dim=512,
-                                              depth=2,num_heads=4,mlp_ratio=4,reduction_factor=reduction_factor, adpt_mode=True))
-        # self.encoder_layer4_down=nn.Sequential(
-        #     VisionTransformer(kernel_size=3,stride=1,padding=1,in_chans=512,embed_dim=512,
-        #                                       depth=2,num_heads=4,mlp_ratio=4))
-
-        '''
-        self.decoder_layer1=nn.Sequential(
-            nn.ConvTranspose3d(512*2,512,kernel_size=2,stride=1,padding=1),
-            nn.ConvTranspose3d(512,384,kernel_size=2,stride=1,padding=1),
-            nn.BatchNorm3d(384),
-            nn.LeakyReLU(0.2),)
-        self.transres1=ResBlock3D(1024, 384)
-        self.decoder_layer1_up=nn.Sequential(
-            nn.ConvTranspose3d(384, 256, kernel_size)
-            )
-        '''
-        #4*4*4
+                                              depth=2,num_heads=4,mlp_ratio=4, tune_mode=True))
+       
         self.decoder_layer1=nn.Sequential(
             nn.Conv3d(512,512,kernel_size=3,stride=1,padding=1),
             nn.LeakyReLU(0.2),
             nn.BatchNorm3d(512),
             )
         self.resup1=ResBlock3D(512, 512)
-        self.decoder_layer1_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=512,embed_dim=256,depth=2,num_heads=4,
-                                                    reduction_factor=reduction_factor, adpt_mode=True)
-        #8*8*8
+        self.decoder_layer1_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=512,embed_dim=256,depth=2,num_heads=4, tune_mode=True)
+
         self.decoder_layer2=nn.Sequential(
             nn.Conv3d(256*2,256,kernel_size=3,stride=1,padding=1),
             nn.Dropout3d(0.2),
@@ -702,10 +634,8 @@ class Generator(nn.Module):
             nn.BatchNorm3d(256),
             )
         self.resup2=ResBlock3D(256*2, 256)
-        self.decoder_layer2_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=256,embed_dim=128,depth=1,num_heads=4,
-                                                    reduction_factor=reduction_factor, adpt_mode=True)
-        #16*16*16
-        #
+        self.decoder_layer2_up=VisionTransformer_up(kernel_size=2,stride=2,in_chans=256,embed_dim=128,depth=1,num_heads=4, tune_mode=True)
+
         self.decoder_layer3=nn.Sequential(
             nn.Conv3d(128*2,128,kernel_size=3,stride=1,padding=1),
             nn.LeakyReLU(0.2),
@@ -713,56 +643,37 @@ class Generator(nn.Module):
             )
         self.resup3=ResBlock3D(128*2, 128)
         self.decoder_layer3_up=nn.ConvTranspose3d(128,64,kernel_size=2,stride=2)
-        #32*32*32
-        #
+
         self.decoder_layer4=nn.Sequential(
             nn.Conv3d(64*2,64,kernel_size=3,stride=1,padding=1),
             nn.Conv3d(64,32,kernel_size=3,stride=1,padding=1),
             nn.ConvTranspose3d(32,1,kernel_size=2,stride=2),
             nn.LeakyReLU(0.2)
             )
-        #64*64*64
+
     def forward(self,x):
-        # print("---------Generator---------")
-        # print("Gen input x:",x.shape)
-        # x=self.encoder_conv(x)
-        en0=self.encoder_layer0_down(x)#32*32*32
-        # print("Gen en0:",en0.shape)
-        en1=self.encoder_layer1_down(en0)#16*16*16
-        # print("Gen en1:",en1.shape)
+        en0=self.encoder_layer0_down(x)
+        en1=self.encoder_layer1_down(en0)
+        en2=self.encoder_layer2_down(en1)
+        en3=self.encoder_layer3_down(en2)
         
-        en2=self.encoder_layer2_down(en1)#8*8*8
-        # print("Gen en2:",en2.shape)
-        en3=self.encoder_layer3_down(en2)#4*4*4
-        # print("Gen en3:",en3.shape)
-         
-        
-        
-        # print("---------Decoder---------")
         de0=self.decoder_layer1(en3)+self.resup1(en3)
-        # print("de0:", de0.shape)#(1, 512, 8, 8, 8)
-        
-        de0=self.decoder_layer1_up(de0)#8*8*8
-        # print("Gen d0:",de0.shape)
+        de0=self.decoder_layer1_up(de0)
         
         cat1=torch.cat([en2,de0],1)
         de1=self.decoder_layer2(cat1)+self.resup2(cat1)
         de1=self.decoder_layer2_up(de1)
-        # print("Gen d1:",de1.shape)
         
         cat2=torch.cat([en1,de1],1)
         de2=self.decoder_layer3(cat2)+self.resup3(cat2)
         de2=self.decoder_layer3_up(de2)
-        # print("Gen d2:",de2.shape)
-        
         cat3=torch.cat([en0,de2],1)
         de3=self.decoder_layer4(cat3)
         
-        # print("Gen d3:",de3.shape) 
         return de3+x 
-#
+
 class Discriminator(nn.Module):
-    def __init__(self,reduction_factor=1):
+    def __init__(self):
         super().__init__()
         self.conv0=nn.Sequential(
             nn.Conv3d(2,8,kernel_size=3,stride=2,padding=1),
@@ -781,13 +692,10 @@ class Discriminator(nn.Module):
             nn.Dropout3d(0.2),
             )
         self.conv3=VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=32,embed_dim=64,
-                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3,
-                                            )
+                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3,tune_mode=False)
         self.conv4=VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=64,embed_dim=64,
-                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3,
-                                            )
+                                              depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.,tune_mode=False)
 
-        #self.conv5=nn.Conv3d(128,1,kernel_size=1,stride=1,padding=0)
         self.mlp=nn.Sequential(
             nn.AdaptiveAvgPool3d(1),
             Rearrange('... () () () -> ...'),
@@ -795,118 +703,72 @@ class Discriminator(nn.Module):
         self.linear=nn.Linear(128, 1)
         self.sigmoid=nn.Sigmoid()
     def forward(self,x):
-        # print("---------Discriminator---------")
-        # print("dis input x:",x.shape)
         x=self.conv0(x)
-        # print("dis conv0 x:", x.shape)
         x=self.conv1(x)
-        # print("dis conv1 x:", x.shape)
         x=self.conv2(x)
-        # print("dis conv2 x:", x.shape)
         x=self.conv3(x)
-        # print("dis conv3 x:", x.shape)
         x=self.conv4(x)
-        # print("dis conv4 x:", x.shape)
-        #x=self.conv5(x)
-        # print("dis conv5 x:",x.shape)
-        #x=self.mlp(x)
-        #print("dis mlp x:",x.shape)
-        #x=self.linear(x.view(128))
-        #print("dis linear view x:", x.shape)
         x=self.sigmoid(x)
-        # print("dis output x:", x.shape)
         return x
     
-# (1, 16, 64, 64, 64)
-# (1, 32, 32, 32, 32)
-# (1, 64, 16, 16, 16)
-# (1, 64, 8, 8, 8)
-# (1, 64)
-
-#
 def D_train(D: Discriminator, G: Generator, X, Y,BCELoss, optimizer_D):
-    # Label to object (right to left) x:lpet y:spet
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    #image_size = X.size(3) // 2
-    x = X.to(device)  # label
-    y = Y.to(device)  # ground truth
-    #x = X[:, :, :, image_size:]  # Label map (right half)
-    #y = X[:, :, :, :image_size]   # Physical map (left half)
+    x = X.to(device) 
+    y = Y.to(device)  
     xy = torch.cat([x, y], dim=1)  
-    #
+
     D.zero_grad()
-    # real data
     D_output_r = D(xy).squeeze()
-    #D_real_loss = BCELoss(D_output_r, torch.ones(D_output_r.size()))
     D_real_loss = BCELoss(D_output_r, torch.ones(D_output_r.size()).to(device))
-    # fake data
+
     G_output = G(x)
     X_fake = torch.cat([x, G_output], dim=1)
     D_output_f = D(X_fake).squeeze()
     D_fake_loss = BCELoss(D_output_f, torch.zeros(D_output_f.size()).to(device))
-    #D_fake_loss = BCELoss(D_output_f, torch.zeros(D_output_f.size()))
-    # back prop
+
     D_loss = (D_real_loss + D_fake_loss) * 0.5
-    #print('Dloss:',D_loss.item())
     D_loss.backward()
     optimizer_D.step()
     return D_loss.data.item()
-#
-## training generator ##
+
 def G_train(D: Discriminator, G:Generator, X, Y,BCELoss, L1, optimizer_G, lamb=100):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #image_size = X.size(3) // 2
     x = X.to(device)   
-    y = Y.to(device)   
-    #x = X[:, :, :, image_size:]   
-    #y = X[:, :, :, :image_size]   
+    y = Y.to(device)     
     G.zero_grad()
-    # fake data
     G_output = G(x)
     X_fake = torch.cat([x, G_output], dim=1)
     D_output_f = D(X_fake).squeeze()
-    #print(D_output_f.shape)
     G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()).to(device))
-    #G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()))
     G_L1_Loss = L1(G_output, y)
-    #print('G_L1_loss:',G_L1_Loss.item())
     print('bce_loss:',G_BCE_loss.data.item(),' L1_loss:',G_L1_Loss.data.item())
-    #
+    
     G_loss = G_BCE_loss + lamb * G_L1_Loss
-    #print('cur_g_loss:',G_loss.item())
     G_loss.backward()
     optimizer_G.step()
     return G_loss.data.item() 
 
 
 def G_val(D, G, X, Y, BCELoss, L1, optimizer_G, lamb=100):
-   
-              
-                  
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    #image_size = X.size(3) // 2
-    
     x = X.to(device)   
-    y = Y.to(device)   
-    #x = X[:, :, :, image_size:]   
-    #y = X[:, :, :, :image_size]   
+    y = Y.to(device)    
     G.zero_grad()
-    # fake data
     G_output = G(x)
     X_fake = torch.cat([x, G_output], dim=1)
     D_output_f = D(X_fake).squeeze()
-    #print(D_output_f.shape)
+    
     G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()).to(device))
-    #G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()))
     G_L1_Loss = L1(G_output, y)
-    #print('G_L1_loss:',G_L1_Loss.item())
+    
     print('bce_loss:',G_BCE_loss.data.item(),' L1_loss:',G_L1_Loss.data.item())
-    #
+    
     G_loss = G_BCE_loss + lamb * G_L1_Loss
-    #print('cur_g_loss:',G_loss.item())
     G_loss.backward()
     optimizer_G.step()
+    
     return G_loss.data.item() 
 
 
