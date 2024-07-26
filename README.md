@@ -51,11 +51,6 @@ To create an json file for efficient data split, run the following command:
 sh shell/data/make_json.sh
 ```
 
-### Training
-```commandline
-sh shell/train/tuning.sh
-```
-
 ### Downloading pre-trained weights
 Click the links below to download the pre-trained weights for each of the five scanners. Each scanner has weights for three folds. 
 Training details are described in our paper. Currently, available versions of pre-trained weights are as follows:
@@ -64,6 +59,16 @@ Training details are described in our paper. Currently, available versions of pr
 - [Scanner 3](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
 - [Scanner 4](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
 - [Scanner 5](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+
+### Pre-training
+```commandline
+sh shell/train/pretraining.sh
+```
+
+### PEFT
+```commandline
+sh shell/train/tuning.sh
+```
 
 ### How to Apply LoRA in Conv3D
 Using Low-Rank Adaptation (LoRA) with Conv3D involves modifying the Conv3D layers to integrate the LoRA technique.
