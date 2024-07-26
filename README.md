@@ -22,10 +22,15 @@
 We will release the code soon ! 🦍
 
 ### Requirements
-
+- 3D CVT-GAN
 ```
-conda env create -f environment.yml
+conda env create -f cvt.yml
 conda activate cvt
+```
+- unetr
+```
+conda env create -f unetr.yml
+conda activate unetr
 ```
 
 ### Dataset Preparation
