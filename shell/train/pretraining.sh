@@ -2,7 +2,7 @@
 # peft training shell code
 
 type=fft # tune_mode
-jsons=() # *-fold
+jsons=(1 2 3) # *-fold
 targets=() # pretraining scanner
 num=30 # fixed number of pretraining data
 
@@ -54,24 +54,18 @@ for json in "${jsons[@]}"; do
                     --pretrained_dir "./base_raw/Resolution/${folder}#${json}/" \
                     --pretrained_model_name "./base_raw/Resolution/final_${folder}#${json}.pt" \
                     --csv_dir "/root_dir/csv/${type}/num_${num}.xlsx"\
-                    --optim_lr "" \
-                    --reg_weight "" \
-                    --optim_name "" \
-                    --lrschedule "" \
+                    --optim_lr "1e-3" \
+                    --reg_weight "1e-5" \
+                    --optim_name "adamw" \
+                    --lrschedule "cosine_anneal" \
                     --space_x "$space_x" \
                     --space_y "$space_y" \
                     --space_z "$space_z" \
                     --roi_z "$roi_z" \
-                    --en1_tokens "0" \
-                    --en2_tokens "8" \
-                    --en3_tokens "32" \
-                    --rf "$rf" \
-                    --r "$r" \
-                    --lora_alpha "$alpha" \
                     --tuning \
                     --tune_mode "$type" \
                     --filename "${folder_dir}" \
-                    --wandb_project "Masterthesis_cvt_${type}_${num}" \
+                    --wandb_project "${type}_${num}" \
                     --save_checkpoint 
         done
     done

@@ -47,8 +47,6 @@ import warnings
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 parser = argparse.ArgumentParser()
-
-parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", default=True, help="start training from saved checkpoint")
 parser.add_argument("--data_dir", default="", type=str, help="dataset directory")
 parser.add_argument("--json_list", default=".json", type=str, help="dataset json file")
