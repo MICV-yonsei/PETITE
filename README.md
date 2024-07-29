@@ -79,9 +79,8 @@ Using Low-Rank Adaptation (LoRA) with Conv3D involves modifying the Conv3D layer
 ```
 import loralib as lora
 ```
-nn.Conv3d -> lora.Conv3d
 
 ### ADNI policy
-ADNI data cannot be publicly shared by private users. It was not possible to directly upload data in this repository. However, feel free to [contact me](yumin@yonsei.ac.kr).
+ADNI data cannot be publicly shared by private users. It was not possible to directly upload data in this repository. However, feel free to [contact me](yumin@yonsei.ac.kr) if you need more information about how to access data or about data used.
 
 Remember to follow the ADNI data sharing and publication policy, if you are going to publish a work in which data from the ADNI database were used.
