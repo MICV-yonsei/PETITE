@@ -24,12 +24,12 @@ We will release the code soon ! 🦍
 ### Requirements
 - 3D CVT-GAN
 ```
-conda env create -f cvt.yml
+conda env create -f cvt.yaml
 conda activate cvt
 ```
-- unetr
+- [UNETR](https://github.com/Project-MONAI/research-contributions/tree/main/UNETR/BTCV)
 ```
-conda env create -f unetr.yml
+conda env create -f unetr.yaml
 conda activate unetr
 ```
 
