@@ -1,7 +1,6 @@
-# 2023-09-24
-# CVT3D_Model_all.py
+# CVT3D_Model_Prompt.py
 # Tested under 
-# main_all.py --tuning --tune_mode "all" with trainer_pro.py 
+# main.py --tuning --tune_mode "prompt" with trainer.py 
 # 
 # 1. Add prompts to all encoder and decoder
 # 2. ViT_prompted supports self.num_tokens=0 and self.DEEP=False at once
@@ -10,60 +9,24 @@
 
 from functools import partial
 from itertools import repeat
-#from torch._six import container_abcs
-
-import logging
-import warnings
-warnings.filterwarnings("ignore")
-import os
+from einops import rearrange
+from einops.layers.torch import Rearrange
 from collections import OrderedDict
-# from VPT_PREFIX_model import PromptedTransformer
-
-import math
-import numpy as np
-import torch
-import torch.nn as nn
-# import torchvision as tv
-
+from timm.models.layers import DropPath, trunc_normal_
+from thop import profile
 from functools import reduce
 from operator import mul
-from torch.nn.modules.utils import _pair
 from torch.nn import Conv2d, Dropout
-from scipy import ndimage
+
+import logging
+import os
 import numpy as np
 import scipy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
-from einops.layers.torch import Rearrange
 import SimpleITK as sitk
-from timm.models.layers import DropPath, trunc_normal_
-from thop import profile
-# from configs import config
-# from vit_backbones.vit import CONFIGS
-# from vit_backbones.vit import Transformer, CONFIGS
-
-#from .registry import register_model
-
-
-# From PyTorch internals
-'''
-def _ntuple(n):
-    def parse(x):
-        if isinstance(x, container_abcs.Iterable):
-            return x
-        return tuple(repeat(x, n))
-
-    return parse
-
-
-to_1tuple = _ntuple(1)
-to_2tuple = _ntuple(2)
-to_3tuple = _ntuple(3)
-to_4tuple = _ntuple(4)
-to_ntuple = _ntuple
-'''
+import math
 
 class LayerNorm(nn.LayerNorm):
     """Subclass torch's LayerNorm to handle fp16."""
@@ -109,7 +72,7 @@ class Attention(nn.Module):
                  qkv_bias=False,
                  attn_drop=0.,
                  proj_drop=0.,
-                 method='dw_bn', #q,k,v에 각각 projection
+                 method='dw_bn', 
                  kernel_size=3,
                  stride_kv=2,
                  stride_q=1,
@@ -214,15 +177,11 @@ class Attention(nn.Module):
             or self.conv_proj_v is not None
         ):
             q, k, v = self.forward_conv(x, h, w,d)
-        #print('q:',q.shape)
-        #print('k:',q.shape)
-        #print('v:',q.shape)
+
         q = rearrange(self.proj_q(q), 'b t (h d) -> b h t d', h=self.num_heads)
         k = rearrange(self.proj_k(k), 'b t (h d) -> b h t d', h=self.num_heads)
         v = rearrange(self.proj_v(v), 'b t (h d) -> b h t d', h=self.num_heads)
-        #print('q:',q.shape)
-        #print('k:',q.shape)
-        #print('v:',q.shape)
+
         attn_score = torch.einsum('bhlk,bhtk->bhlt', [q, k]) * self.scale
         attn = F.softmax(attn_score, dim=-1)
         attn = self.attn_drop(attn)
@@ -234,80 +193,6 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
 
         return x
-
-    @staticmethod
-    def compute_macs(module, input, output):
-        # T: num_token
-        # S: num_token
-        input = input[0]
-        flops = 0
-
-        _, T, C = input.shape
-        H = W = int(np.sqrt(T-1)) if module.with_cls_token else int(np.sqrt(T))
-
-        H_Q = H / module.stride_q
-        W_Q = H / module.stride_q
-        T_Q = H_Q * W_Q + 1 if module.with_cls_token else H_Q * W_Q
-
-        H_KV = H / module.stride_kv
-        W_KV = W / module.stride_kv
-        T_KV = H_KV * W_KV + 1 if module.with_cls_token else H_KV * W_KV
-
-        # C = module.dim
-        # S = T
-        # Scaled-dot-product macs
-        # [B x T x C] x [B x C x T] --> [B x T x S]
-        # multiplication-addition is counted as 1 because operations can be fused
-        flops += T_Q * T_KV * module.dim
-        # [B x T x S] x [B x S x C] --> [B x T x C]
-        flops += T_Q * module.dim * T_KV
-
-        if (
-            hasattr(module, 'conv_proj_q')
-            and hasattr(module.conv_proj_q, 'conv')
-        ):
-            params = sum(
-                [
-                    p.numel()
-                    for p in module.conv_proj_q.conv.parameters()
-                ]
-            )
-            flops += params * H_Q * W_Q
-
-        if (
-            hasattr(module, 'conv_proj_k')
-            and hasattr(module.conv_proj_k, 'conv')
-        ):
-            params = sum(
-                [
-                    p.numel()
-                    for p in module.conv_proj_k.conv.parameters()
-                ]
-            )
-            flops += params * H_KV * W_KV
-
-        if (
-            hasattr(module, 'conv_proj_v')
-            and hasattr(module.conv_proj_v, 'conv')
-        ):
-            params = sum(
-                [
-                    p.numel()
-                    for p in module.conv_proj_v.conv.parameters()
-                ]
-            )
-            flops += params * H_KV * W_KV
-
-        params = sum([p.numel() for p in module.proj_q.parameters()])
-        flops += params * T_Q
-        params = sum([p.numel() for p in module.proj_k.parameters()])
-        flops += params * T_KV
-        params = sum([p.numel() for p in module.proj_v.parameters()])
-        flops += params * T_KV
-        params = sum([p.numel() for p in module.proj.parameters()])
-        flops += params * T
-
-        module.__flops__ += flops
 
 class Block(nn.Module):
     def __init__(self,
@@ -347,9 +232,7 @@ class Block(nn.Module):
         x = self.norm1(x)
         attn = self.attn(x, h, w,d)
         attn_drop = self.drop_path(attn)
-        #add adpater
         x = res + self.drop_path(attn)
-        #res뒤에 add adapter
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         return x
@@ -575,12 +458,11 @@ class VisionTransformer(nn.Module):
             )
         self.blocks = nn.ModuleList(blocks)
 
-        if init == 'xavier': #가중치 초기화 방법
+        if init == 'xavier': 
             self.apply(self._init_weights_xavier)
         else:
             self.apply(self._init_weights_trunc_normal)
 
-    #초기화 방법 1.
     def _init_weights_trunc_normal(self, m):
         if isinstance(m, nn.Linear):
             # logging.info('=> init weight of Linear from trunc norm')
@@ -591,7 +473,7 @@ class VisionTransformer(nn.Module):
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d)):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-    #초기화 방법 2.
+            
     def _init_weights_xavier(self, m):
         if isinstance(m, nn.Linear):
             # logging.info('=> init weight of Linear from xavier uniform')
@@ -693,14 +575,7 @@ class VisionTransformer_up_prompted(nn.Module):
 
         if self.project == -1:
             prompt_dim = hidden_size
-            self.prompt_proj = nn.Identity() #input==output
-        # else:
-        #     # only for prepend / add
-        #     prompt_dim = self.project    
-        #     self.prompt_proj1 = nn.Linear(prompt_dim*prompt_dim*prompt_dim, hidden_size*hidden_size*hidden_size)
-        #     self.prompt_proj2 = nn.Linear(prompt_dim*prompt_dim*prompt_dim, hidden_size*hidden_size*int(hidden_size/2))
-        #     nn.init.kaiming_normal_(self.prompt_proj1.weight, a=0, mode='fan_out')
-        #     nn.init.kaiming_normal_(self.prompt_proj2.weight, a=0, mode='fan_out')
+            self.prompt_proj = nn.Identity() 
 
         self.INITIATION = INITIATION
         self.DEEP = deep
@@ -755,20 +630,6 @@ class VisionTransformer_up_prompted(nn.Module):
                 raise ValueError(f"Unsupported Dimension {B, C, H, W, D}")
             prompt_emb = self.prompt_proj(self.prompt_embeddings)
             
-        elif self.INITIATION == "reuse":
-            prompt_emb = F.interpolate(input=self.prompt_embeddings, size=(H, W, D), mode='nearest')
-            
-        # else:
-        #     if D == W:
-        #         self.prompt_proj = self.prompt_proj1
-        #     elif D == int(W/2):
-        #         self.prompt_proj = self.prompt_proj2
-        #     else:
-        #         raise ValueError(f"Unsupported Dimension {B, C, H, W, D}")
-        #     prompt_emb = rearrange(self.prompt_embeddings1, 'b c h w d -> b c (h w d)')
-        #     prompt_emb = self.prompt_proj(prompt_emb)
-        #     prompt_emb = rearrange(prompt_emb, 'b c (h w d) -> b c h w d', h=H, w=W, d=D)
-
         x = torch.cat((
                 self.prompt_dropout(prompt_emb).expand(B, -1, -1, -1, -1),
                 x
@@ -917,15 +778,8 @@ class VisionTransformer_prompted(nn.Module):
 
         if self.project == -1:
             prompt_dim = hidden_size  
-            self.prompt_proj = nn.Identity() #input==output
-        # else:
-        #     # only for prepend / add
-        #     prompt_dim = self.project    
-        #     self.prompt_proj1 = nn.Linear(prompt_dim*prompt_dim*prompt_dim, hidden_size*hidden_size*hidden_size)
-        #     self.prompt_proj2 = nn.Linear(prompt_dim*prompt_dim*prompt_dim, hidden_size*hidden_size*int(hidden_size/2))
-        #     nn.init.kaiming_normal_(self.prompt_proj1.weight, a=0, mode='fan_out')
-        #     nn.init.kaiming_normal_(self.prompt_proj2.weight, a=0, mode='fan_out')
-
+            self.prompt_proj = nn.Identity()
+   
         self.INITIATION = INITIATION
         self.DEEP = deep
         if self.INITIATION == "random":
@@ -979,17 +833,6 @@ class VisionTransformer_prompted(nn.Module):
                 raise ValueError(f"Unsupported Dimension {B, C, H, W, D}")
         
             prompt_emb = self.prompt_proj(self.prompt_embeddings)
-
-        # else:
-        #     if D == W:
-        #         self.prompt_proj = self.prompt_proj1
-        #     elif D == int(W/2):
-        #         self.prompt_proj = self.prompt_proj2
-        #     else:
-        #         raise ValueError(f"Unsupported Dimension {B, C, H, W, D}")
-        #     prompt_emb = rearrange(self.prompt_embeddings1, 'b c h w d -> b c (h w d)')
-        #     prompt_emb = self.prompt_proj(prompt_emb)
-        #     prompt_emb = rearrange(prompt_emb, 'b c (h w d) -> b c h w d', h=H, w=W, d=D)
 
         x = torch.cat((
                 self.prompt_dropout(prompt_emb).expand(B, -1, -1, -1, -1),
@@ -1075,20 +918,12 @@ class Generator(nn.Module):
     def __init__(self, en1_tokens=0, en2_tokens=8, en3_tokens=32, de1_tokens=0, de2_tokens=0, 
                  deep=False, INITIATION="random"):
         super().__init__()
-        #downsampling part
-        #layer0 1->64
-        #64*64*64
         self.en1_tokens = en1_tokens
         self.en2_tokens = en2_tokens
         self.en3_tokens = en3_tokens
         self.de1_tokens = de1_tokens
         self.de2_tokens = de2_tokens
 
-        # if deep:
-        #     print("VPT Deep")
-        # else:
-        #     print("VPT Shallow")    
-            
         print(f"Number of prompt embeddings prepended to Generator: en1 {self.en1_tokens}, en2 {self.en2_tokens}, en3 {self.en3_tokens}")
         print(f"                                                  : de1 {self.de1_tokens}, de2 {self.de2_tokens}")
 
@@ -1107,22 +942,7 @@ class Generator(nn.Module):
         self.encoder_layer3_down=nn.Sequential(
             VisionTransformer_prompted(kernel_size=3,stride=2,padding=1,in_chans=256,embed_dim=512,
                                               depth=2,num_heads=4,mlp_ratio=4, num_tokens=self.en3_tokens,deep=deep))
-        # self.encoder_layer4_down=nn.Sequential(
-        #     VisionTransformer(kernel_size=3,stride=1,padding=1,in_chans=512,embed_dim=512,
-        #                                       depth=2,num_heads=4,mlp_ratio=4))
-
-        '''
-        self.decoder_layer1=nn.Sequential(
-            nn.ConvTranspose3d(512*2,512,kernel_size=2,stride=1,padding=1),
-            nn.ConvTranspose3d(512,384,kernel_size=2,stride=1,padding=1),
-            nn.BatchNorm3d(384),
-            nn.LeakyReLU(0.2),)
-        self.transres1=ResBlock3D(1024, 384)
-        self.decoder_layer1_up=nn.Sequential(
-            nn.ConvTranspose3d(384, 256, kernel_size)
-            )
-        '''
-        #4*4*4
+    
         self.decoder_layer1=nn.Sequential(
             nn.Conv3d(512,512,kernel_size=3,stride=1,padding=1),
             nn.LeakyReLU(0.2),
@@ -1132,7 +952,7 @@ class Generator(nn.Module):
         self.decoder_layer1_up=VisionTransformer_up_prompted(kernel_size=2,stride=2,in_chans=512,embed_dim=256,
                                                                     depth=2,num_heads=4, num_tokens=self.de1_tokens, deep=deep, 
                                                                     INITIATION=INITIATION)
-        #8*8*8
+
         self.decoder_layer2=nn.Sequential(
             nn.Conv3d(256*2,256,kernel_size=3,stride=1,padding=1),
             nn.Dropout3d(0.2),
@@ -1143,7 +963,6 @@ class Generator(nn.Module):
         self.decoder_layer2_up=VisionTransformer_up_prompted(kernel_size=2,stride=2,in_chans=256,embed_dim=128,
                                                                     depth=1,num_heads=4, num_tokens=self.de2_tokens,
                                                                     INITIATION=INITIATION)
-        #16*16*16
 
 
         self.decoder_layer3=nn.Sequential(
@@ -1153,14 +972,13 @@ class Generator(nn.Module):
             )
         self.resup3=ResBlock3D(128*2, 128)
         self.decoder_layer3_up=nn.ConvTranspose3d(128,64,kernel_size=2,stride=2)
-        #32*32*32
+
         self.decoder_layer4=nn.Sequential(
             nn.Conv3d(64*2,64,kernel_size=3,stride=1,padding=1),
             nn.Conv3d(64,32,kernel_size=3,stride=1,padding=1),
             nn.ConvTranspose3d(32,1,kernel_size=2,stride=2),
             nn.LeakyReLU(0.2)
             )
-        #64*64*64
 
     def load_from(self, weight):            
         with torch.no_grad():
@@ -1291,44 +1109,20 @@ class Generator(nn.Module):
             return weight
 
     def forward(self,x):
-        # print("---------Generator---------")
-        # print("Gen input x:",x.shape) #torch.Size([24, 1, 64, 64, 64])
-        # x=self.encoder_conv(x)
-        en0=self.encoder_layer0_down(x) #torch.Size([24, 64, 32, 32, 32])
-        # print("Gen en0:",en0.shape)
-        en1=self.encoder_layer1_down(en0)#16*16*16
-        
-        # print("Gen en1:",en1.shape) #torch.Size([24, 128, 16, 16, 16])
-        
-        en2=self.encoder_layer2_down(en1)#8*8*8
-        # print("Gen en2:",en2.shape)
-        en3=self.encoder_layer3_down(en2)#4*4*4
-        # print("Gen en3:",en3.shape)
-
-        
-        
-        # print("---------Decoder---------")
+        en0=self.encoder_layer0_down(x) 
+        en1=self.encoder_layer1_down(en0)
+        en2=self.encoder_layer2_down(en1)
+        en3=self.encoder_layer3_down(en2)
         de0=self.decoder_layer1(en3)+self.resup1(en3)
-        # print("de0:", de0.shape)#(1, 512, 8, 8, 8)
-        
-        de0=self.decoder_layer1_up(de0)#8*8*8
-        # print("Gen d0:",de0.shape)
-        # The above code is printing the shape of the variable "de1".
-        
+        de0=self.decoder_layer1_up(de0)
         cat1=torch.cat([en2,de0],1)
         de1=self.decoder_layer2(cat1)+self.resup2(cat1)
         de1=self.decoder_layer2_up(de1)
-        # print("Gen d1:",de1.shape)
-        
         cat2=torch.cat([en1,de1],1)
         de2=self.decoder_layer3(cat2)+self.resup3(cat2)
         de2=self.decoder_layer3_up(de2)
-        # print("Gen d2:",de2.shape)
-        
         cat3=torch.cat([en0,de2],1)
         de3=self.decoder_layer4(cat3)
-        
-        # print("Gen d3:",de3.shape) 
         return de3+x
 
 class Discriminator(nn.Module):
@@ -1355,16 +1149,10 @@ class Discriminator(nn.Module):
             nn.BatchNorm3d(32),
             nn.Dropout3d(0.2),
             )
-        # self.conv3=VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=32,embed_dim=64,
-        #                                       depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3)
-        # self.conv4=VisionTransformer(kernel_size=3,stride=2,padding=1,in_chans=64,embed_dim=64,
-        #                                       depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3)
         self.conv3=VisionTransformer_prompted(kernel_size=3,stride=2,padding=1,in_chans=32,embed_dim=64,
                                               depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3, num_tokens=self.conv3_tokens)
         self.conv4=VisionTransformer_prompted(kernel_size=3,stride=2,padding=1,in_chans=64,embed_dim=64,
                                               depth=1,num_heads=2,mlp_ratio=4,drop_rate=0.3, num_tokens=self.conv4_tokens)
-
-        #self.conv5=nn.Conv3d(128,1,kernel_size=1,stride=1,padding=0)
         self.mlp=nn.Sequential(
             nn.AdaptiveAvgPool3d(1),
             Rearrange('... () () () -> ...'),
@@ -1441,52 +1229,29 @@ class Discriminator(nn.Module):
             return weight
                    
     def forward(self,x):
-        # print("---------Discriminator---------")
-        # print("dis input x:",x.shape)
         x=self.conv0(x)
-        # print("dis conv0 x:", x.shape)
         x=self.conv1(x)
-        # print("dis conv1 x:", x.shape)
         x=self.conv2(x)
-        # print("dis conv2 x:", x.shape)
         x=self.conv3(x)
-        # print("dis conv3 x:", x.shape)
         x=self.conv4(x)
-        # print("dis conv4 x:", x.shape)
-        #x=self.conv5(x)
-        # print("dis conv5 x:",x.shape)
-        #x=self.mlp(x)
-        #print("dis mlp x:",x.shape)
-        #x=self.linear(x.view(128))
-        #print("dis linear view x:", x.shape)
         x=self.sigmoid(x)
-        # print("dis output x:", x.shape)
         return x
     
 def D_train(D: Discriminator, G: Generator, X, Y,BCELoss, optimizer_D):
-    # Label to object (right to left) x:lpet y:spet
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #image_size = X.size(3) // 2
-    x = X.to(device)  # label
-    y = Y.to(device)  # ground truth
-    #x = X[:, :, :, image_size:]  # Label map (right half)
-    #y = X[:, :, :, :image_size]   # Physical map (left half)
+    x = X.to(device)  
+    y = Y.to(device)  
     xy = torch.cat([x, y], dim=1)  
-    #
+
     D.zero_grad()
-    # real data
     D_output_r = D(xy).squeeze()
-    #D_real_loss = BCELoss(D_output_r, torch.ones(D_output_r.size()))
     D_real_loss = BCELoss(D_output_r, torch.ones(D_output_r.size()).to(device))
-    # fake data
     G_output = G(x)
     X_fake = torch.cat([x, G_output], dim=1)
     D_output_f = D(X_fake).squeeze()
     D_fake_loss = BCELoss(D_output_f, torch.zeros(D_output_f.size()).to(device))
-    #D_fake_loss = BCELoss(D_output_f, torch.zeros(D_output_f.size()))
-    # back prop
     D_loss = (D_real_loss + D_fake_loss) * 0.5
-    #print('Dloss:',D_loss.item())
     D_loss.backward()
     optimizer_D.step()
     return D_loss.data.item()
@@ -1494,54 +1259,30 @@ def D_train(D: Discriminator, G: Generator, X, Y,BCELoss, optimizer_D):
 def G_train(D: Discriminator, G:Generator, X, Y,BCELoss, L1, optimizer_G, lamb=100):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    
-    #image_size = X.size(3) // 2
     x = X.to(device)   
-    y = Y.to(device)   
-    #x = X[:, :, :, image_size:]   
-    #y = X[:, :, :, :image_size]   
+    y = Y.to(device)     
     G.zero_grad()
-    # fake data
     G_output = G(x)
     X_fake = torch.cat([x, G_output], dim=1)
     D_output_f = D(X_fake).squeeze()
-    #print(D_output_f.shape)
     G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()).to(device))
-    #G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()))
     G_L1_Loss = L1(G_output, y)
-    #print('G_L1_loss:',G_L1_Loss.item())
-    #print('bce_loss:',G_BCE_loss.data.item(),' L1_loss:',G_L1_Loss.data.item())
-    #
     G_loss = G_BCE_loss + lamb * G_L1_Loss
-    #print('cur_g_loss:',G_loss.item())
     G_loss.backward()
     optimizer_G.step()
     return G_loss.data.item() 
 
 def G_val(D, G, X, Y, BCELoss, L1, optimizer_G, lamb=100):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    #image_size = X.size(3) // 2
-    
     x = X.to(device)   
     y = Y.to(device)   
-    #x = X[:, :, :, image_size:]   
-    #y = X[:, :, :, :image_size]   
     G.zero_grad()
-    # fake data
     G_output = G(x)
     X_fake = torch.cat([x, G_output], dim=1)
     D_output_f = D(X_fake).squeeze()
-    #print(D_output_f.shape)
     G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()).to(device))
-    #G_BCE_loss = BCELoss(D_output_f, torch.ones(D_output_f.size()))
     G_L1_Loss = L1(G_output, y)
-    #print('G_L1_loss:',G_L1_Loss.item())
-    #print('bce_loss:',G_BCE_loss.data.item(),' L1_loss:',G_L1_Loss.data.item())
-    #
     G_loss = G_BCE_loss + lamb * G_L1_Loss
-    #print('cur_g_loss:',G_loss.item())
     G_loss.backward()
     optimizer_G.step()
     return G_loss.data.item() 
-

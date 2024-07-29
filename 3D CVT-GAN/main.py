@@ -41,6 +41,7 @@ import networks.CVT3D_Model_Original as CVT3D_Model_Original
 import networks.CVT3D_Model_ADPT as CVT3D_Model_ADPT
 import networks.CVT3D_Model_LoRA as CVT3D_Model_LoRA
 import networks.CVT3D_Model_Prompt as CVT3D_Model_Prompt
+import networks.CVT3D_Model_PETITE as CVT3D_Model_PETITE
 import warnings
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -117,6 +118,7 @@ parser.add_argument("--de2_tokens", default=0, type=int, help="number of prompt 
 parser.add_argument("--conv3_tokens", default=0, type=int, help="number of prompt embeddings prepended to conv3 layer")
 parser.add_argument("--conv4_tokens", default=0, type=int, help="number of prompt embeddings prepended to conv4 layer")
 parser.add_argument("--deep", action="store_true", help="allow VPT Deep mode") 
+### peft module argparser ###
 
 parser.add_argument("--num_seed", default=42, type=int, help="number of seed") 
 parser.add_argument("--csv_dir", default="", type=str, help="directory to save validation result")
@@ -170,7 +172,10 @@ def main_worker(gpu, args):
     elif args.tune_mode in ["lora"]:
         modelg = CVT3D_Model_LoRA.Generator(rank=args.r, lora_alpha=args.lora_alpha)
         modeld = CVT3D_Model_LoRA.Discriminator(rank=args.r, lora_alpha=args.lora_alpha)
-        
+    elif args.tune_mode in ["petite"]: # Ours
+        modelg = CVT3D_Model_PETITE.Generator(
+            en1_tokens=args.en1_tokens, en2_tokens=args.en2_tokens, en3_tokens=args.en3_tokens, rank=args.r, lora_alpha=args.lora_alpha)
+        modeld = CVT3D_Model_PETITE.Discriminator(conv3_tokens=args.conv3_tokens, conv4_tokens=args.conv4_tokens) 
     elif args.tune_mode in ["shallow","deep"]: 
         if args.tune_mode == "deep":
             args.deep = True
@@ -192,6 +197,7 @@ def main_worker(gpu, args):
     if args.tuning:
         model_dict = torch.load(os.path.join(args.pretrained_dir, args.pretrained_model_name))
         if args.tune_mode in ["shallow", "deep"]:
+            # remove embedding
             state_dict = modeld.load_from(model_dict['state_dict_G']) 
             modeld.load_state_dict(state_dict, strict=False)
             state_dict_G = modelg.load_from(model_dict['state_dict'])
@@ -228,7 +234,7 @@ def main_worker(gpu, args):
     
     modelg.cuda(args.gpu)
     modeld.cuda(args.gpu)
-        
+
     if args.optim_name == "adam":
         optimizer = torch.optim.Adam(modeld.parameters(), lr=args.optim_lr, weight_decay=args.reg_weight)
         optimizer_G = torch.optim.Adam(modelg.parameters(), lr=args.optim_lr, weight_decay=args.reg_weight)

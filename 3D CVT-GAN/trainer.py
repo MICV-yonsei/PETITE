@@ -43,11 +43,11 @@ def Tuner(modeld, modelg, args):
     modeld.requires_grad_(False)
     modelg.requires_grad_(False)  
 
-    if args.tune_mode == "fft":
+    if args.tune_mode == "fft": # full fine-tuning
         modeld.requires_grad_(True)
         modelg.requires_grad_(True)
         
-    elif args.tune_mode == "ln":
+    elif args.tune_mode == "ln": # layernorm tuning
         for m in modeld.modules():
             if isinstance(m, nn.LayerNorm):
                 m.requires_grad_(True)
@@ -55,7 +55,7 @@ def Tuner(modeld, modelg, args):
             if isinstance(m, nn.LayerNorm):
                 m.requires_grad_(True)
                 
-    elif args.tune_mode == "bias":
+    elif args.tune_mode == "bias": # bitfit tuning
         for n, p in modeld.named_parameters():
             if 'bias' in n:
                 p.requires_grad_(True)
@@ -63,7 +63,7 @@ def Tuner(modeld, modelg, args):
             if 'bias' in n:
                 p.requires_grad_(True)
 
-    elif args.tune_mode == "adpt":
+    elif args.tune_mode == "adpt": # Adapters tuning
         for n, p in modeld.named_parameters():
             if 'adapter' in n:
                 p.requires_grad_(True)
@@ -71,7 +71,7 @@ def Tuner(modeld, modelg, args):
             if 'adapter' in n:
                 p.requires_grad_(True)
                 
-    elif args.tune_mode == "lora":
+    elif args.tune_mode == "lora": # LoRA tuning
         for n, p in modeld.named_parameters():
             if 'lora' in n:
                 p.requires_grad_(True)
@@ -79,7 +79,7 @@ def Tuner(modeld, modelg, args):
             if 'lora' in n:
                 p.requires_grad_(True)
                         
-    elif args.tune_mode in ["shallow", "deep"]:
+    elif args.tune_mode in ["shallow", "deep"]: # Visual Prompt Tuning - Shallow, Deep mode  
         for n, p in modeld.named_parameters():
             if args.roi_z == 64:
                 if 'prompt_embeddings1' in n:
@@ -109,13 +109,33 @@ def Tuner(modeld, modelg, args):
                     if 'deep_prompt_embeddings2' in n:
                         p.requires_grad_(True)
 
-    elif args.tune_mode == "ssf":
+    elif args.tune_mode == "ssf": # SSF tuning
         for n, p in modelg.named_parameters():
             if 'ssf_' in n:
                 p.requires_grad_(True)
         for n, p in modeld.named_parameters():
             if 'ssf_' in n:
                 p.requires_grad_(True)
+                
+    elif args.tune_mode in ["petite"]: # Ours : En-VPT(S), De-LoRA + Tuning bitfit across all layers
+        for n, p in modelg.named_parameters():
+            if args.roi_z == 64:
+                if 'prompt_embeddings1' in n:
+                    p.requires_grad_(True)
+                if 'lora' in n:
+                    p.requires_grad_(True)
+                if 'bias' in n:
+                    p.requires_grad_(True)
+                    
+            elif args.roi_z == 32:
+                if 'prompt_embeddings2' in n:
+                    p.requires_grad_(True)
+                if 'lora' in n:
+                    p.requires_grad_(True)
+                if 'bias' in n:
+                    p.requires_grad_(True)   
+    
+    
                              
     else:
         print("None of layers are unfrozen")
@@ -412,14 +432,14 @@ def run_training_cvt(
     if args.amp:
         scaler = GradScaler()
 
-    # Save result as csv
+    # Save result as csv - not optional
     folder_dir = os.path.dirname(args.csv_dir)
     if not os.path.exists(folder_dir):
             os.makedirs(folder_dir)
     if not os.path.exists(args.csv_dir):
         df = make_new_df(max_epoch=args.max_epochs, val_every=args.val_every)
     else:
-        # 3-fold CV
+        # 3-fold CV 
         df = {
             '1': pd.read_excel(args.csv_dir, sheet_name='1', header=0, index_col=0), 
             '2': pd.read_excel(args.csv_dir, sheet_name='2', header=0, index_col=0),

@@ -22,7 +22,7 @@
 We will release the code soon ! 🦍
 
 ### Requirements
-- 3D CVT-GAN
+- [3D CVT-GAN](https://github.com/Aru321/GAN-for-PET-Reconstruction)
 ```
 conda env create -f cvt.yaml
 conda activate cvt
@@ -59,11 +59,7 @@ sh shell/data/make_json.sh
 ### Downloading pre-trained weights
 Click the links below to download the pre-trained weights for each of the five scanners. Each scanner has weights for three folds. 
 Training details are described in our paper. Currently, available versions of pre-trained weights are as follows:
-- [Scanner 1](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
-- [Scanner 2](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
-- [Scanner 3](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
-- [Scanner 4](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
-- [Scanner 5](https://drive.google.com/drive/folders/1RYErNuPzq1hmxgtQAayw_XEc0Vind0wG?usp=sharing)
+- [Scanner 1-5](https://drive.google.com/drive/folders/1nk-6n3KY8XGIn2TMxDRNZ5awdz5FYGnM)
 
 ### Pre-training
 ```commandline
@@ -78,3 +74,14 @@ sh shell/train/tuning.sh
 ### How to Apply LoRA in Conv3D
 Using Low-Rank Adaptation (LoRA) with Conv3D involves modifying the Conv3D layers to integrate the LoRA technique.
 
+- Modified to place Lora instead of Convolutional Projection in Attention
+- nn.Conv3d -> lora.Conv3d
+```
+import loralib as lora
+```
+nn.Conv3d -> lora.Conv3d
+
+### ADNI policy
+ADNI data cannot be publicly shared by private users. It was not possible to directly upload data in this repository. However, feel free to [contact me](yumin@yonsei.ac.kr).
+
+Remember to follow the ADNI data sharing and publication policy, if you are going to publish a work in which data from the ADNI database were used.
