@@ -1,18 +1,15 @@
-
-import math
-import os
-# import matplotlib.pyplot as plt
-import numpy as np
-import torch
-
 from monai import data, transforms
 from monai.data import load_decathlon_datalist
-import numpy as np
-import nibabel as nib
-
 from utils.utils import distributed_all_gather
 from monai.transforms import SaveImaged
 from monai.data import decollate_batch
+
+import math
+import os
+import numpy as np
+import torch
+import numpy as np
+import nibabel as nib
 import torch.utils.data.distributed
 
 
@@ -72,7 +69,7 @@ def get_loader(args):
     train_transform = transforms.Compose(
         [
             transforms.LoadImaged(keys=["image", "label"]),
-            transforms.EnsureChannelFirstd(keys=["image", "label"]), #(1,128,128,128)
+            transforms.EnsureChannelFirstd(keys=["image", "label"]),
             transforms.Spacingd(
                 keys=["image", "label"], pixdim=(args.space_x, args.space_y, args.space_z), mode=("bilinear", "nearest")
             ),
@@ -83,7 +80,7 @@ def get_loader(args):
             transforms.RandCropByPosNegLabeld( 
                 keys=["image", "label"],
                 label_key="label", 
-                spatial_size=(args.roi_x, args.roi_y, args.roi_z), #=roi
+                spatial_size=(args.roi_x, args.roi_y, args.roi_z), 
                 pos=1,
                 neg=1,
                 num_samples=4,
@@ -96,18 +93,13 @@ def get_loader(args):
             [   
                 transforms.LoadImaged(keys=["image", "label"]),
                 transforms.EnsureChannelFirstd(keys=["image", "label"]),
-                # transforms.CropForegroundd(keys=["image", "label"], source_key="image"),
-                # transforms.Orientationd(keys=["image", "label"], axcodes="RAS"),
                 transforms.Spacingd(
                 keys=["image", "label"], pixdim=(args.space_x, args.space_y, args.space_z),),
                 transforms.ScaleIntensityd(
                     keys=["image", "label"], minv=0, maxv=1
                 ),
-                # transforms.SaveImaged(keys=["image", "label"], output_dir="./outputs/", output_ext=".nii", resample=False),
-    
             ]
         )
-    ###original###
     
     if args.test_mode:
         test_files = load_decathlon_datalist(datalist_json, True, "validation", base_dir=data_dir)
