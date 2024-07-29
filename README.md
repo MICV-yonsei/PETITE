@@ -53,7 +53,7 @@ Your dataset directory should be structured as follows:
 
 To create an json file for efficient data split, run the following command:
 ```commandline
-sh data/make_json.sh
+python3 data/make_json.py
 ```
 
 ### Downloading pre-trained weights
