@@ -52,7 +52,7 @@ for json in "${jsons[@]}"; do
                     --logdir "" \
                     --pretrained_dir "./base_raw/Resolution/${folder}#${json}/" \
                     --pretrained_model_name "./base_raw/Resolution/final_${folder}#${json}.pt" \\
-                    --csv_dir "./csv_result/${type}/num_${num}.xlsx"\
+                    --csv_dir "/root_dir/csv/${type}/num_${num}.xlsx"\
                     --optim_lr "1e-3" \
                     --reg_weight "1e-5" \
                     --optim_name "adamw" \

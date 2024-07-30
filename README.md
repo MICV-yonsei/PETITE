@@ -16,8 +16,8 @@
   </h3>
 </div>
 
- ![STR](https://github.com/mineeuk/PETITE/assets/72694034/2641a7f3-facc-4eac-84cf-b96ea3c32f64)
- 
+<img width="1194" alt="str" src="https://github.com/user-attachments/assets/07e49bf9-a8ca-4e81-ab5d-b97bce895875">
+
 
 ### Requirements
 - [3D CVT-GAN](https://github.com/Aru321/GAN-for-PET-Reconstruction)
