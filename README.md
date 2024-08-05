@@ -57,7 +57,7 @@ python3 data/make_json.py
 ### Downloading pre-trained weights
 Click the links below to download the pre-trained weights for each of the five scanners. Each scanner has weights for three folds. 
 Training details are described in our paper. Currently, available versions of pre-trained weights are as follows:
-- [Scanner 1-5](https://drive.google.com/drive/folders/1nk-6n3KY8XGIn2TMxDRNZ5awdz5FYGnM)
+- [Google Drive](https://drive.google.com/drive/folders/1nk-6n3KY8XGIn2TMxDRNZ5awdz5FYGnM)
 
 ### Pre-training
 ```commandline
