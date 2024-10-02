@@ -82,3 +82,15 @@ import loralib as lora
 ADNI data cannot be publicly shared by private users. It was not possible to directly upload data in this repository. However, feel free to [contact me](yumin@yonsei.ac.kr) if you need more information about how to access data or about data used.
 
 Remember to follow the ADNI data sharing and publication policy, if you are going to publish a work in which data from the ADNI database were used.
+
+@InProceedings{Kim_Parameter_MICCAI2024,
+        author = { Kim, Yumin and Choi, Gayoon and Hwang, Seong Jae},
+        title = { { Parameter Efficient Fine Tuning for Multi-scanner PET to PET Reconstruction } },
+        booktitle = {proceedings of Medical Image Computing and Computer Assisted Intervention -- MICCAI 2024},
+        year = {2024},
+        publisher = {Springer Nature Switzerland},
+        volume = {LNCS 15007},
+        month = {October},
+        page = {pending}
+}
+
