@@ -83,6 +83,9 @@ ADNI data cannot be publicly shared by private users. It was not possible to dir
 
 Remember to follow the ADNI data sharing and publication policy, if you are going to publish a work in which data from the ADNI database were used.
 
+## Citation
+If you found this code useful, please cite the following paper:  
+```
 @InProceedings{Kim_Parameter_MICCAI2024,
         author = { Kim, Yumin and Choi, Gayoon and Hwang, Seong Jae},
         title = { { Parameter Efficient Fine Tuning for Multi-scanner PET to PET Reconstruction } },
@@ -93,4 +96,4 @@ Remember to follow the ADNI data sharing and publication policy, if you are goin
         month = {October},
         page = {pending}
 }
-
+```
